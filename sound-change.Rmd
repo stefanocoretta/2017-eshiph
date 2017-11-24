@@ -1,0 +1,948 @@
+---
+title: "Simulation of sound change"
+author: "Stefano Coretta"
+date: "05/07/2017"
+output: 
+  html_document: 
+    df_print: tibble
+    highlight: tango
+    number_sections: yes
+    theme: readable
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+theme_set(theme_bw())
+library(itsadug)
+library(tidymv)
+seed <- 8788
+```
+
+# Functions
+
+```{r produce-formants}
+produce_formants <- function(target, bias = 0) {
+    noise <- sample(seq(-0.2, 0.2, by = 0.05), 1)
+    outcome <- target + noise + bias
+    return(outcome)
+}
+```
+
+```{r create-lexicon}
+create_lexicon <- function(lexicon_size, vowels, group_size, formants) {
+    lexicon <- tibble(
+        word = 1:lexicon_size,
+        vowel = rep(vowels, len = lexicon_size),
+        class = sample(rep(1:(lexicon_size/group_size), each = group_size,
+                           len = lexicon_size)),
+        frequency = rep(1:lexicon_size, each = length(vowels), len = lexicon_size),
+        f1 = rep(as.list(formants), len = lexicon_size)
+    )
+    
+    return(lexicon)
+}
+```
+
+```{r create-lexicon-2}
+create_lexicon_2 <- function(lexicon_size, vowels, group_size, formants_1, formants_2) {
+    lexicon <- tibble(
+        word = 1:lexicon_size,
+        vowel = rep(vowels, len = lexicon_size),
+        class = sample(rep(1:(lexicon_size/group_size), each = group_size,
+                           len = lexicon_size)),
+        frequency = rep(1:lexicon_size, each = length(vowels), len = lexicon_size),
+        f1 = rep(as.list(formants_1), len = lexicon_size),
+        f2 = rep(as.list(formants_2), len = lexicon_size)
+    )
+    
+    return(lexicon)
+}
+```
+
+```{r resample}
+resample <- function(x) {
+    if (length(x) == 1) {
+        return(x)
+    } else {
+        sample(x, 1)
+    }
+}
+```
+
+```{r populate-lexicon}
+populate_lexicon <- function(lexicon) {
+    lexicon_size <- nrow(lexicon)
+    lexicon_frequency <- lexicon$frequency
+    lexicon_f1 <- lexicon$f1
+    
+    for (i in 1:50000) {
+        word_id <- sample(1:lexicon_size, 1, prob = lexicon_frequency)
+        target <- resample(unlist(lexicon_f1[[word_id]]))
+        outcome <- produce_formants(target)
+        lexicon_f1[[word_id]][[length(lexicon_f1[[word_id]]) + 1]] <- outcome
+    }
+    
+    lexicon$f1 <- lexicon_f1
+    return(lexicon)
+}
+```
+
+```{r populate-lexicon-2}
+populate_lexicon_2 <- function(lexicon) {
+    lexicon_size <- nrow(lexicon)
+    lexicon_frequency <- lexicon$frequency
+    lexicon_f1 <- lexicon$f1
+    lexicon_f2 <- lexicon$f2
+    
+    for (i in 1:50000) {
+        word_id <- sample(1:lexicon_size, 1, prob = lexicon_frequency)
+        target_1 <- resample(unlist(lexicon_f1[[word_id]]))
+        outcome_1 <- produce_formants(target_1)
+        lexicon_f1[[word_id]][[length(lexicon_f1[[word_id]]) + 1]] <- outcome_1
+        target_2 <- resample(unlist(lexicon_f2[[word_id]]))
+        outcome_2 <- produce_formants(target_2)
+        lexicon_f2[[word_id]][[length(lexicon_f2[[word_id]]) + 1]] <- outcome_2
+    }
+    
+    lexicon$f1 <- lexicon_f1
+    lexicon$f2 <- lexicon_f2
+    return(lexicon)
+}
+```
+
+```{r get-encode}
+get_encode <- function(condition) {
+    if (condition) {
+        encoding_prob <- lexicon_frequency[word_id] /
+            max(lexicon_frequency)
+        
+        encode <- sample(c(TRUE, FALSE), 1,
+            prob = c(
+                encoding_prob, 1 - encoding_prob
+            )
+        )
+    } else {
+        encode <- TRUE
+    }
+    
+    return(encode)
+}
+```
+
+
+```{r sound-shift}
+sound_shift <- function(lexicon_size, vowels, group_size, formants, biased_vowel, bias, iterations, save_freq) {
+    lexicon <- create_lexicon(lexicon_size, vowels, group_size, formants) %>%
+        populate_lexicon()
+    
+    lexicon_size <- nrow(lexicon)
+    lexicon_vowel <- lexicon[["vowel"]]
+    lexicon_class <- lexicon[["class"]]
+    lexicon_frequency <- lexicon[["frequency"]]
+    lexicon_f1 <- lexicon[["f1"]]
+    
+    new_lexicon_f1 <- tibble(init = 1:lexicon_size)
+    
+    environment(get_encode) <- environment()
+    
+    for (iteration in 1:iterations) {
+        word_id <- sample(1:lexicon_size, 1, prob = lexicon_frequency)
+        
+        vowel <- lexicon_vowel[word_id]
+        word_class <- lexicon_class[word_id]
+        
+        if (vowel == biased_vowel) {
+            current_bias <- bias
+        } else {
+            current_bias <- 0
+        }
+        
+        #### Produce the chosen word ####
+        
+        target <- resample(unlist(lexicon_f1[word_id]))
+        outcome <- produce_formants(target, current_bias)
+        
+        if (vowel == vowels[1]) {
+            pool_max <- suppressWarnings(max(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            encode <- get_encode(outcome <= pool_max)
+            
+        } else if (vowel == vowels[2]) {
+            if (length(vowels) == 2) {
+                pool_min <- suppressWarnings(min(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                    )
+                ))
+                
+                encode <- get_encode(outcome >= pool_min)
+                
+            } else {# if length(vowels) == 3
+                pool_min <- suppressWarnings(min(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                    )
+                ))
+                
+                pool_max <- suppressWarnings(max(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[3])]
+                    )
+                ))
+                
+                encode <- get_encode(outcome >= pool_min || outcome <= pool_max)
+            }
+        } else {# if vowel == vowels[3]
+            pool_min <- suppressWarnings(min(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+                )
+            ))
+            
+            encode <- get_encode(outcome >= pool_min)
+        }
+        
+        #### Encode ####
+        
+        if (encode) {
+            lexicon_f1[[word_id]][[length(lexicon_f1[[word_id]]) + 1]] <- outcome
+        }
+    
+    
+        if (iteration %% save_freq == 0) {
+            column <- as.character(iteration)
+            
+            new_lexicon_f1 <- mutate(
+                new_lexicon_f1,
+                !!column := lexicon_f1
+            )
+            
+        }
+    }
+    
+    lexicon <- cbind(lexicon, new_lexicon_f1) %>%
+        rename(`0` = f1) %>%
+        select(-init) %>%
+        gather(time, f1, matches("\\d")) %>%
+        mutate(time = as.integer(time)) %>%
+        group_by(time, word) %>%
+        mutate(f1_mean = mean(unlist(f1))) %>%
+        ungroup()
+
+    
+    return(lexicon)
+}
+```
+
+```{r sound-shift-2}
+sound_shift_2 <- function(lexicon_size, vowels, group_size, formants_1, formants_2, biased_vowel, bias, iterations, save_freq) {
+    lexicon <- create_lexicon_2(lexicon_size, vowels, group_size, formants_1, formants_2) %>%
+        populate_lexicon_2()
+    
+    lexicon_size <- nrow(lexicon)
+    lexicon_vowel <- lexicon[["vowel"]]
+    lexicon_class <- lexicon[["class"]]
+    lexicon_frequency <- lexicon[["frequency"]]
+    lexicon_f1 <- lexicon[["f1"]]
+    lexicon_f2 <- lexicon[["f2"]]
+    
+    new_lexicon_f1 <- tibble(init_1 = 1:lexicon_size)
+    new_lexicon_f2 <- tibble(init_2 = 1:lexicon_size)
+    
+    environment(get_encode) <- environment()
+    
+    for (iteration in 1:iterations) {
+        word_id <- sample(1:lexicon_size, 1, prob = lexicon_frequency)
+        
+        vowel <- lexicon_vowel[word_id]
+        word_class <- lexicon_class[word_id]
+        
+        if (vowel == biased_vowel) {
+            current_bias <- bias
+        } else {
+            current_bias <- 0
+        }
+        
+        #### Produce the chosen word ####
+        
+        target <- resample(unlist(lexicon_f1[word_id]))
+        outcome <- produce_formants(target, current_bias)
+        target_2 <- resample(unlist(lexicon_f2[word_id]))
+        outcome_2 <- produce_formants(target_2)
+        
+        if (vowel == vowels[1]) {
+            pool_max <- suppressWarnings(max(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_min <- suppressWarnings(min(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_max_2 <- suppressWarnings(max(unlist(
+                lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_min_2 <- suppressWarnings(min(unlist(
+                lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            encode <- get_encode(
+                (outcome >= pool_min & outcome <= pool_max) &
+                    (outcome_2 >= pool_min_2 & outcome_2 <= pool_max_2)
+            )
+            
+        } else if (vowel == vowels[2]) {
+            if (length(vowels) == 2) {
+                pool_max <- suppressWarnings(max(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_min <- suppressWarnings(min(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_max_2 <- suppressWarnings(max(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_min_2 <- suppressWarnings(min(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                encode <- get_encode(
+                    (outcome >= pool_min & outcome <= pool_max) &
+                        (outcome_2 >= pool_min_2 & outcome_2 <= pool_max_2)
+                )
+                
+            } else {# if length(vowels) == 3
+                pool_max <- suppressWarnings(max(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_min <- suppressWarnings(min(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_max_2 <- suppressWarnings(max(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_min_2 <- suppressWarnings(min(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[1])]
+                )))
+                
+                pool_max_3 <- suppressWarnings(max(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[3])]
+                )))
+                
+                pool_min_3 <- suppressWarnings(min(unlist(
+                    lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[3])]
+                )))
+                
+                pool_max_2_3 <- suppressWarnings(max(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[3])]
+                )))
+                
+                pool_min_2_3 <- suppressWarnings(min(unlist(
+                    lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[3])]
+                )))
+                
+                encode <- get_encode(
+                    (outcome >= pool_min & outcome <= pool_max) &
+                        (outcome_2 >= pool_min_2 & outcome_2 <= pool_max_2) ||
+                        (outcome >= pool_min_3 & outcome <= pool_max_3) &
+                        (outcome_2 >= pool_min_2_3 & outcome_2 <= pool_max_2_3)
+                )
+            }
+        } else {# if vowel == vowels[3]
+            pool_max <- suppressWarnings(max(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_min <- suppressWarnings(min(unlist(
+                lexicon_f1[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_max_2 <- suppressWarnings(max(unlist(
+                lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            pool_min_2 <- suppressWarnings(min(unlist(
+                lexicon_f2[which(lexicon_vowel[which(lexicon_class == word_class)] == vowels[2])]
+            )))
+            
+            encode <- get_encode(
+                (outcome >= pool_min & outcome <= pool_max) &
+                    (outcome_2 >= pool_min_2 & outcome_2 <= pool_max_2)
+            )
+        }
+        
+        #### Encode ####
+        
+        if (encode) {
+            lexicon_f1[[word_id]][[length(lexicon_f1[[word_id]]) + 1]] <- outcome
+            lexicon_f2[[word_id]][[length(lexicon_f2[[word_id]]) + 1]] <- outcome_2
+        }
+    
+    
+        if (iteration %% save_freq == 0) {
+            column_1 <- paste("f1", as.character(iteration), sep = "_")
+            column_2 <- paste("f2", as.character(iteration), sep = "_")
+            
+            new_lexicon_f1 <- mutate(
+                new_lexicon_f1,
+                !!column_1 := lexicon_f1
+            )
+            
+            new_lexicon_f2 <- mutate(
+                new_lexicon_f2,
+                !!column_2 := lexicon_f2
+            )
+            
+        }
+    }
+    
+    lexicon <- cbind(lexicon, new_lexicon_f1, new_lexicon_f2) %>%
+        rename(`f1_0` = f1, `f2_0` = f2) %>%
+        select(-init_1, -init_2) %>%
+        gather(time, formant, matches("f[12]_\\d")) %>%
+        separate(time, c("formant_number", "time")) %>%
+        spread(formant_number, formant) %>%
+        mutate(time = as.integer(time)) %>%
+        group_by(time, word) %>%
+        mutate(f1_mean = mean(unlist(f1)), f2_mean = mean(unlist(f2))) %>%
+        ungroup()
+
+    
+    return(lexicon)
+}
+```
+
+# Two vowels, F1 (1)
+
+## Simulation
+
+```{r lexicon}
+set.seed(seed)
+lexicon <- sound_shift(
+    lexicon_size = 100,
+    vowels = c("BART", "BAT"),
+    group_size = 5,
+    formants = c(6.5, 5.5),
+    biased_vowel = "BART",
+    bias = -0.3,
+    iterations = 200000,
+    save_freq = 10000
+) %>%
+    mutate(
+        freq_bin = ifelse(
+            frequency < max(frequency)/2,
+            "low",
+            "high"
+        )
+    )
+```
+
+## Plotting
+
+```{r 1-vowel-f1}
+lexicon %>%
+    ggplot(aes(time, f1_mean)) +
+    geom_jitter(alpha = 0.3, size = 0.5) +
+    geom_smooth(aes(colour = vowel))
+```
+
+```{r 1-vowel-freq-line}
+lexicon %>%
+    ggplot(aes(time, f1_mean, colour = frequency, group = word)) +
+    geom_line() +
+    facet_grid(. ~ vowel)
+```
+
+```{r 1-vowel-bin-line}
+lexicon %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin, group = word)) +
+    geom_line(alpha = 0.5) +
+    facet_grid(. ~ vowel)
+```
+
+```{r 1-vowel-bin-smooth}
+plot_1 <- lexicon %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin)) +
+    geom_point(alpha = 0.1, size = 0.5) +
+    geom_smooth(se = FALSE) +
+    facet_grid(. ~ vowel)
+plot_1
+```
+
+```{r 1-f1-freq-vowel}
+lexicon %>%
+    filter(time == 0) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+
+lexicon %>%
+    filter(time == 100000) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+
+lexicon %>%
+    filter(time == 200000) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+```
+
+# Three vowels, F1 (2)
+
+## Simulation
+
+```{r lexicon-2}
+set.seed(seed)
+lexicon_2 <- sound_shift(
+    lexicon_size = 100,
+    vowels = c("BART", "BAT", "BET"),
+    group_size = 5,
+    formants = c(6.5, 5.5, 4.5),
+    biased_vowel = "BART",
+    bias = -0.3,
+    iterations = 200000,
+    save_freq = 10000
+) %>%
+    mutate(
+        freq_bin = ifelse(
+            frequency < max(frequency)/2,
+            "low",
+            "high"
+        )
+    )
+```
+
+## Plotting
+
+```{r 2-vowel-f1}
+lexicon_2 %>%
+    ggplot(aes(time, f1_mean)) +
+    geom_jitter(alpha = 0.3, size = 0.5) +
+    geom_smooth(aes(colour = vowel))
+```
+
+```{r 2-vowel-freq-bin}
+lexicon_2 %>%
+    ggplot(aes(time, f1_mean, colour = frequency, group = word)) +
+    geom_line() +
+    facet_grid(. ~ vowel)
+```
+
+```{r 2-vowel-bin-line}
+lexicon_2 %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin, group = word)) +
+    geom_line(alpha = 0.5) +
+    facet_grid(. ~ vowel)
+```
+
+```{r 2-vowel-bin-smooth}
+plot_2 <- lexicon_2 %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin)) +
+    geom_point(alpha = 0.1, size = 0.5) +
+    geom_smooth(se = FALSE) +
+    facet_grid(. ~ vowel)
+plot_2
+```
+
+# Two vowels, F1, F2 (3)
+
+## Simulation
+
+```{r lexicon-3}
+set.seed(seed)
+lexicon_3 <- sound_shift_2(
+    lexicon_size = 100,
+    vowels = c("BART", "BAT"),
+    group_size = 5,
+    formants_1 = c(6.5, 5.5),
+    formants_2 = c(12.7, 13),
+    biased_vowel = "BART",
+    bias = -0.3,
+    iterations = 200000,
+    save_freq = 10000
+) %>%
+    mutate(
+        freq_bin = ifelse(
+            frequency < max(frequency)/2,
+            "low",
+            "high"
+        )
+    )
+```
+
+## Plotting
+
+```{r 3-vowel-f1}
+lexicon_3 %>%
+    ggplot(aes(time, f1_mean)) +
+    geom_jitter(alpha = 0.3, size = 0.5) +
+    geom_smooth(aes(colour = vowel))
+```
+
+```{r 3-vowel-freq-line}
+lexicon_3 %>%
+    ggplot(aes(time, f1_mean, colour = frequency, group = word)) +
+    geom_line() +
+    facet_grid(. ~ vowel)
+```
+
+```{r 3-vowel-bin-line}
+lexicon_3 %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin, group = word)) +
+    geom_line(alpha = 0.5) +
+    facet_grid(. ~ vowel)
+```
+
+```{r 3-vowel-bin-smooth}
+plot_3 <- lexicon_3 %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin)) +
+    geom_point(alpha = 0.1, size = 0.5) +
+    geom_smooth(se = FALSE) +
+    facet_grid(. ~ vowel)
+plot_3
+```
+
+```{r 3-f1-sequence}
+lexicon_3 %>%
+    filter(time == 0) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+
+lexicon_3 %>%
+    filter(time == 100000) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+
+lexicon_3 %>%
+    filter(time == 200000) %>%
+    ggplot(aes(frequency, f1_mean)) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(aes(colour = vowel), method = "lm") +
+    ylim(5, 7)
+```
+
+```{r 3-vowel-plot}
+lexicon_3 %>%
+    filter(time == 0) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(5, 7) + ylim(12, 13.5)
+
+lexicon_3 %>%
+    filter(time == 100000) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(5, 7) + ylim(12, 13.5)
+
+lexicon_3 %>%
+    filter(time == 200000) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(5, 7) + ylim(12, 13.5)
+```
+
+# Three vowels, F1, F2 (4)
+
+## Simulation
+
+```{r lexicon-4}
+set.seed(seed)
+lexicon_4 <- sound_shift_2(
+    lexicon_size = 100,
+    vowels = c("BART", "BAT", "BET"),
+    group_size = 5,
+    formants_1 = c(6.5, 5.5, 4.5),
+    formants_2 = c(12.7, 13, 13.3),
+    biased_vowel = "BART",
+    bias = -0.3,
+    iterations = 200000,
+    save_freq = 10000
+) %>%
+    mutate(
+        freq_bin = ifelse(
+            frequency < max(frequency)/2,
+            "low",
+            "high"
+        )
+    )
+```
+
+```{r 4-vowel-bin-smooth}
+plot_4 <- lexicon_4 %>%
+    ggplot(aes(time, f1_mean, colour = freq_bin)) +
+    geom_jitter(alpha = 0.2, size = 0.5) +
+    geom_smooth(se = FALSE) +
+    facet_grid(. ~ vowel)
+plot_4
+```
+
+```{r 4-vowel-plot}
+lexicon_4 %>%
+    filter(time == 0) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(4, 7) + ylim(12, 14)
+
+lexicon_4 %>%
+    filter(time == 100000) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(4, 7) + ylim(12, 14)
+
+lexicon_4 %>%
+    filter(time == 200000) %>%
+    ggplot(aes(f1_mean, f2_mean, colour = vowel)) +
+    geom_point() +
+    xlim(4, 7) + ylim(12, 14)
+```
+
+# Analysis
+
+## Two vowels, F1 (1)
+
+```{r lexicon-prep}
+lexicon <- lexicon %>%
+    mutate(
+        vowel_ord = ordered(vowel, levels = c("BART", "BAT")),
+        word_ord = as.ordered(word)
+    ) %>%
+    arrange(word, time) %>%
+    create_event_start("word")
+```
+
+```{r lexicon-gam}
+lexicon_gam <- bam(
+    f1_mean ~
+        frequency +
+        vowel_ord +
+        s(time, bs = "cr") +
+        s(time, bs = "cr", by = frequency) +
+        s(time, bs = "cr", by = vowel_ord) +
+        s(frequency, bs = "cr") +
+        ti(time, frequency) +
+        ti(time, frequency, by = vowel_ord) +
+        s(time, word_ord, bs = "fs"),
+    data = lexicon,
+    method = "fREML"
+)
+
+summary(lexicon_gam)
+```
+
+```{r lexicon-gam-plot}
+fvisgam(lexicon_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BART"),
+        rm.ranef = TRUE
+        )
+
+fvisgam(lexicon_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BAT"),
+        rm.ranef = TRUE
+        )
+```
+
+## Three vowels, F1 (2)
+
+```{r lexicon-2-prep}
+lexicon_2 <- lexicon_2 %>%
+    mutate(
+        vowel_ord = ordered(vowel, levels = c("BART", "BAT", "BET")),
+        word_ord = as.ordered(word)
+    ) %>%
+    arrange(word, time) %>%
+    create_event_start("word")
+```
+
+```{r lexicon-2-gam}
+lexicon_2_gam <- bam(
+    f1_mean ~
+        frequency +
+        vowel_ord +
+        s(time, bs = "cr") +
+        s(time, bs = "cr", by = frequency) +
+        s(time, bs = "cr", by = vowel_ord) +
+        s(frequency, bs = "cr") +
+        ti(time, frequency) +
+        ti(time, frequency, by = vowel_ord) +
+        s(time, word_ord, bs = "fs"),
+    data = lexicon_2,
+    method = "fREML"
+)
+
+summary(lexicon_2_gam)
+```
+
+```{r lexicon-2-gam-plot}
+fvisgam(lexicon_2_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BART"),
+        rm.ranef = TRUE
+        )
+
+fvisgam(lexicon_2_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BAT"),
+        rm.ranef = TRUE
+        )
+
+fvisgam(lexicon_2_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BET"),
+        rm.ranef = TRUE
+        )
+```
+
+```{r lexicon-2-smooths-BAT}
+plot_smooth(
+    lexicon_2_gam,
+    view = "time",
+    cond = list(frequency = 10, vowel_ord = "BAT"),
+    rug = F,
+    col = "red",
+    rm.ranef = TRUE
+)
+
+plot_smooth(
+    lexicon_2_gam,
+    view = "time",
+    cond = list(frequency = 20, vowel_ord = "BAT"),
+    rug = F,
+    col = "blue",
+    add = T,
+    rm.ranef = TRUE
+)
+
+plot_smooth(
+    lexicon_2_gam,
+    view = "time",
+    cond = list(frequency = 30, vowel_ord = "BAT"),
+    rug = F,
+    col = "green",
+    add = T,
+    rm.ranef = TRUE
+)
+```
+
+## Two vowels, F1, F2 (3)
+
+```{r lexicon-3-prep}
+lexicon_3 <- lexicon_3 %>%
+    mutate(
+        vowel_ord = ordered(vowel, levels = c("BART", "BAT", "BET")),
+        word_ord = as.ordered(word)
+    ) %>%
+    arrange(word, time) %>%
+    create_event_start("word")
+```
+
+```{r lexicon-3-gam}
+lexicon_3_gam <- bam(
+    f1_mean ~
+        frequency +
+        vowel_ord +
+        s(time, bs = "cr") +
+        s(time, bs = "cr", by = frequency) +
+        s(time, bs = "cr", by = vowel_ord) +
+        s(frequency, bs = "cr") +
+        ti(time, frequency) +
+        ti(time, frequency, by = vowel_ord) +
+        s(time, word_ord, bs = "fs"),
+    data = lexicon_3,
+    method = "fREML"
+)
+
+summary(lexicon_3_gam)
+```
+
+## Three vowels, F1, F2 (4)
+
+```{r lexicon-4-prep}
+lexicon_4 <- lexicon_4 %>%
+    mutate(
+        vowel_ord = ordered(vowel, levels = c("BART", "BAT", "BET")),
+        word_ord = as.ordered(word)
+    ) %>%
+    arrange(word, time) %>%
+    create_event_start("word")
+```
+
+```{r lexicon-4-gam}
+lexicon_4_gam <- bam(
+    f1_mean ~
+        frequency +
+        vowel_ord +
+        s(time, bs = "cr") +
+        s(time, bs = "cr", by = frequency) +
+        s(time, bs = "cr", by = vowel_ord) +
+        s(frequency, bs = "cr") +
+        ti(time, frequency) +
+        ti(time, frequency, by = vowel_ord) +
+        s(time, word_ord, bs = "fs"),
+    data = lexicon_4,
+    method = "fREML"
+)
+
+summary(lexicon_4_gam)
+```
+
+```{r lexicon-4-gam-plot}
+fvisgam(lexicon_4_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BART"),
+        rm.ranef = TRUE
+        )
+
+fvisgam(lexicon_4_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BAT"),
+        rm.ranef = TRUE
+        )
+
+fvisgam(lexicon_4_gam, view = c("time","frequency"),
+        cond = list(vowel_ord = "BET"),
+        rm.ranef = TRUE
+        )
+```
+
+```{r lexicon-4-smooths-BAT}
+plot_smooth(
+    lexicon_4_gam,
+    view = "time",
+    cond = list(frequency = 10, vowel_ord = "BAT"),
+    rug = F,
+    col = "red",
+    rm.ranef = TRUE
+)
+
+plot_smooth(
+    lexicon_4_gam,
+    view = "time",
+    cond = list(frequency = 20, vowel_ord = "BAT"),
+    rug = F,
+    col = "blue",
+    add = T,
+    rm.ranef = TRUE
+)
+
+plot_smooth(
+    lexicon_4_gam,
+    view = "time",
+    cond = list(frequency = 30, vowel_ord = "BAT"),
+    rug = F,
+    col = "green",
+    add = T,
+    rm.ranef = TRUE
+)
+```
