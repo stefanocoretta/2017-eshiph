@@ -1,4 +1,4 @@
-# Reproducibility repository for Coretta 2017
+# Repro of "Sound change, lexical frequency, and ambiguous input: a computational implementation" (ESHP3, 2017)
 
 This is the repository with the code of the poster *Sound change, lexical frequency, and ambiguous input: a computational implementation*, presented at the Third Edinburgh Symposium on Historical Phonology.
 
