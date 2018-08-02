@@ -1,5 +1,7 @@
 # Repro of "Sound change, lexical frequency, and ambiguous input: a computational implementation" (ESHP3, 2017)
 
+[![DOI](https://zenodo.org/badge/111815925.svg)](https://zenodo.org/badge/latestdoi/111815925)
+
 This is the repository with the code of the poster *Sound change, lexical frequency, and ambiguous input: a computational implementation*, presented at the Third Edinburgh Symposium on Historical Phonology.
 
 ## How to reproduce
